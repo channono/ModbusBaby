@@ -1,0 +1,5 @@
+{
+    "default_host": "localhost",
+    "default_port": 502,
+    "polling_interval": 1000
+}

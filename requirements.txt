@@ -1,0 +1,14 @@
+
+modulegraph==0.19.6
+packaging==24.1
+py2app==0.28.8
+pymodbus==3.7.2
+PyQt6==6.7.1
+PyQt6-Qt6==6.7.2
+PyQt6_sip==13.8.0
+pytesseract==0.3.13
+python-dateutil==2.9.0.post0
+pytz==2024.1
+setuptools==74.0.0
+six==1.16.0
+tzdata==2024.1
