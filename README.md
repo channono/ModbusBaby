@@ -27,4 +27,4 @@ ModbusBaby 是一款简单易用、功能强大的 Modbus 协议调试和分析�
 
 ## 许可证
 
-MIT 
+GPL-3.0 license
