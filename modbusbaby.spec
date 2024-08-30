@@ -8,8 +8,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('resources/modbusbaby.ico', 'resources'),
-        ('resources/modbuslogo.png', 'resources'),
-        ('resources/config.json', 'resources')
+        ('resources/modbuslogo.png', 'resources')
     ],
     hiddenimports=[
         'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'gui',
@@ -48,3 +47,6 @@ exe = EXE(
     entitlements_file=None,
     icon='resources/modbusbaby.ico',  # 如果你有图标文件的话
 )
+
+
+    
