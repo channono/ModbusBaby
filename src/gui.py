@@ -1,23 +1,34 @@
 ##大牛大巨婴
-
+import os
 import sys
 import logging
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QLineEdit, QTextEdit, QLabel, QFileDialog, 
+                             QPushButton, QLineEdit, QTextEdit, QLabel, 
                              QTableWidgetItem, QComboBox,QPlainTextEdit,QGridLayout)
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QSettings,QTimer 
 from modbus_debugger import ModbusDebugger
 from data_processor import DataProcessor
-from PyQt6.QtGui import  QPixmap,QFont
+from PyQt6.QtGui import  QIcon,QPixmap,QFont
+
+def get_resource_path(relative_path):
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # 如果是完全打包的应用程序
+        base_path = getattr(sys,'_MEIPASS',os.path.abspath('.'))
+    else:
+        # 如果是开发环境或别名模式
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 
 class ModbusBabyGUI(QMainWindow):
     def __init__(self, config=None):
         super().__init__()
         self.logger = logging.getLogger(__name__)
         self.config = config or {}
-        self.setWindowTitle("ModbusBaby")
-        self.setGeometry(100, 100, 800, 600)
-
+        self.setWindowTitle("ModbusBaby - by Daniel BigGiantBaby")
+        self.setGeometry(100, 100, 650, 600)
+        self.set_window_icon()
+        self.restore_window_state()
         self.modbus_debugger = None
         self.data_processor = DataProcessor()
         # 添加这一行来初始化 slave_id
@@ -26,16 +37,24 @@ class ModbusBabyGUI(QMainWindow):
         self.received_packets = []
         self.polling_timer = QTimer(self)
         self.polling_timer.timeout.connect(self.poll_register)
-
         self.show_packets = False  # 用于跟踪报文显示区域的状态       
         self.init_ui()
-##########################################################################################
+
+    def set_window_icon(self):
+        try:
+            icon_path = get_resource_path('resources/modbusbaby.ico')
+            self.setWindowIcon(QIcon(icon_path))
+            self.logger.info(f"Window icon set successfully: {icon_path}")
+        except Exception as e:
+            self.logger.exception("Error setting window icon")
+
+ 
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         self.main_layout = QVBoxLayout(central_widget)
-        self.setMinimumSize(800, 600)  # 设置最小大小
-        self.resize(1000, 600)  # 设置初始大小
+        self.setMinimumSize(650, 600)  # 设置最小大小
+        self.resize(650, 600)  # 设置初始大小
         # 创建所有UI元素
         self.create_ui_elements()
 
@@ -44,23 +63,49 @@ class ModbusBabyGUI(QMainWindow):
 
         self.update_data_type_visibility()
 
+    def closeEvent(self, event):
+        self.save_window_state()
+        super().closeEvent(event)
+
+    def save_window_state(self):
+        settings = QSettings("ModbusBaby", "WindowState")
+        settings.setValue("geometry", self.saveGeometry())
+        settings.setValue("windowState", self.saveState())
+
+    def restore_window_state(self):
+        settings = QSettings("ModbusBaby", "WindowState")
+        geometry = settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        state = settings.value("windowState")
+        if state:
+            self.restoreState(state)
+
+
+
+
     def create_ui_elements(self):
         # 标题
         self.title_label = QLabel("😄大牛大巨婴👌")
         font = QFont()
-        font.setPointSize(18)
+        font.setPointSize(14)
         font.setBold(True)
         self.title_label.setFont(font)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         # Logo
         self.logo_label = QLabel()
-        pixmap = QPixmap("resources/modbuslogo.png")
-        scaled_pixmap = pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        self.logo_label.setPixmap(scaled_pixmap)
-        self.logo_label.setFixedSize(scaled_pixmap.size())
+        logo_path = get_resource_path('resources/modbuslogo.png')
+        pixmap = QPixmap(logo_path)
+        if pixmap.isNull():
+            print(f"无法加载logo: {logo_path}")  # 添加调试信息
+        else:
+            self.logo_label.setPixmap(pixmap)
+            self.logo_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            
+        self.logo_label.setPixmap(pixmap)
         self.logo_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.logo_label.setStyleSheet("background: transparent;")
+        self.logo_label.setStyleSheet('background: transparent;')
 
 
 
@@ -87,7 +132,7 @@ class ModbusBabyGUI(QMainWindow):
         # 调整输入框的最小宽度
         self.start_address_input.setMinimumWidth(100)
         self.end_address_input.setMinimumWidth(100)
-        self.value_input.setMinimumWidth(625)
+        self.value_input.setMinimumWidth(300)
 
 
         # 报文显示区域
@@ -113,17 +158,27 @@ class ModbusBabyGUI(QMainWindow):
         self.stop_polling_button = QPushButton("停止轮询")
         self.stop_polling_button.clicked.connect(self.stop_polling)
         self.stop_polling_button.setEnabled(False)
+        
+
 
     def setup_layout(self):
         # 主布局
-        main_layout = QVBoxLayout()
+        main_layout = QVBoxLayout() 
         # 第一行：Logo 和标题
         title_layout = QHBoxLayout()
         title_layout.addWidget(self.logo_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        title_layout.addStretch(1)  # 添加弹性空间
+        title_layout.addStretch(1)  # 添加弹性空间        
         title_layout.addWidget(self.title_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
         main_layout.addLayout(title_layout)
         
+            # 设置按钮大小一致
+        button_width = 100
+        button_height = 30
+        self.connect_button.setFixedSize(button_width, button_height)
+        self.read_button.setFixedSize(button_width, button_height)
+        self.write_button.setFixedSize(button_width, button_height)
+
         # 第二行：连接设置
         connection_layout = QHBoxLayout()
         connection_layout.addWidget(QLabel("主机:"))
@@ -144,17 +199,18 @@ class ModbusBabyGUI(QMainWindow):
         operation_layout.addWidget(self.end_address_input)
         operation_layout.addWidget(self.register_type_combo)
         operation_layout.addWidget(self.data_type_combo)
+        operation_layout.addWidget(self.read_button)
         operation_layout.addStretch(1)
         main_layout.addLayout(operation_layout)
 
-        # 第四行：读取和写入按钮
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(QLabel("值:"))
-        button_layout.addWidget(self.value_input)
-        button_layout.addWidget(self.read_button)
-        button_layout.addWidget(self.write_button)
-        button_layout.addStretch(1)
-        main_layout.addLayout(button_layout)
+        # 修改第四行：值输入框和写入按钮
+        value_layout = QHBoxLayout()
+        value_layout.addWidget(QLabel("值:"))
+        value_layout.addWidget(self.value_input, 1)  # 使用拉伸因子 1
+        value_layout.addWidget(self.write_button)
+        main_layout.addLayout(value_layout)
+
+     
 
         # 信息区（日志输出）和清空按钮
         info_layout = QVBoxLayout()
@@ -195,6 +251,7 @@ class ModbusBabyGUI(QMainWindow):
         polling_layout.addStretch(1)
         main_layout.addLayout(polling_layout)
 
+ 
         # 设置主布局
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
@@ -225,21 +282,6 @@ class ModbusBabyGUI(QMainWindow):
             # 添加以下调试代码
             print("Debug - 连接失败。无法进行测试读取。")
 
-
-    def browse_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择Modbus地址表文件", "", "All Files (*);;Excel Files (*.xlsx *.xls);;CSV Files (*.csv);;PDF Files (*.pdf);;Image Files (*.png *.jpg *.jpeg)")
-        if file_path:
-            self.file_path_input.setText(file_path)
-
-    def parse_file(self):
-        file_path = self.file_path_input.text()
-        if file_path:
-            df = self.document_parser.parse_file(file_path)
-            if df is not None:
-                self.update_address_table(df)
-                self.log_output.append(f"成功解析文件: {file_path}")
-            else:
-                self.log_output.append(f"解析文件失败: {file_path}")
 
     def update_address_table(self, df):
         self.address_table.setRowCount(len(df))
@@ -568,6 +610,7 @@ class ModbusBabyGUI(QMainWindow):
         self.received_packet_display.clear()
         self.sent_packets.clear()
         self.received_packets.clear()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
