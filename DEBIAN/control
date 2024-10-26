@@ -1,0 +1,7 @@
+Package: modbusbaby
+Version: 0.0.7
+Section: utils
+Priority: optional
+Architecture: arm64
+Maintainer: Daniel BigGiantBaby
+Description: Modbus RTU/TCP tools
