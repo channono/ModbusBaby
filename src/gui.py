@@ -2,42 +2,59 @@
 import os
 import sys
 import logging
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QLineEdit, QTextEdit, QLabel, 
-                             QTableWidgetItem, QComboBox,QPlainTextEdit,QGridLayout)
-from PyQt6.QtCore import Qt, QSettings,QTimer 
+import datetime
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QLineEdit, QTextEdit, QLabel, QSplitter,QGroupBox,
+                             QTableWidgetItem, QSizePolicy,QStackedWidget, QComboBox)
+from PyQt6.QtCore import Qt, QEvent,QSettings,QTimer
 from modbus_debugger import ModbusDebugger
 from data_processor import DataProcessor
-from PyQt6.QtGui import  QIcon,QPixmap,QFont
+from PyQt6.QtGui import  QIcon,QPixmap,QFont, QIntValidator,QColor, QTextCharFormat,QPalette
+
+
+
 
 def get_resource_path(relative_path):
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         # 如果是完全打包的应用程序
-        base_path = getattr(sys,'_MEIPASS',os.path.abspath('.'))
+        base_path = sys._MEIPASS
     else:
         # 如果是开发环境或别名模式
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-
 class ModbusBabyGUI(QMainWindow):
     def __init__(self, config=None):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_StyleSheetTarget, True)
         self.logger = logging.getLogger(__name__)
-        self.config = config or {}
+        self.config = config if config is not None else {}
+        self.logger.info(f"初始化 ModbusBabyGUI，配置: {self.config}")
+        self.is_connected = False  # 添加一个标志来跟踪连接状态
+        try:
+            self.logger.info("尝试创建 ModbusDebugger 实例")
+            self.modbus_debugger = ModbusDebugger(self.config)
+            self.logger.info("ModbusDebugger 实例创建成功")
+        except Exception as e:
+            self.logger.error(f"创建 ModbusDebugger 实例时出错: {str(e)}")
+            self.modbus_debugger = None
+
         self.setWindowTitle("ModbusBaby - by Daniel BigGiantBaby")
-        self.setGeometry(100, 100, 650, 600)
+        self.setGeometry(100, 100, 866, 600)
         self.set_window_icon()
         self.restore_window_state()
-        self.modbus_debugger = None
+        self.create_ui_elements()
+
+
+        self.byte_order = 'big'
+        self.word_order = 'big'
         self.data_processor = DataProcessor()
-        # 添加这一行来初始化 slave_id
         self.slave_id = self.config.get('default_slave_id', 1)
         self.sent_packets = []
         self.received_packets = []
         self.polling_timer = QTimer(self)
         self.polling_timer.timeout.connect(self.poll_register)
-        self.show_packets = False  # 用于跟踪报文显示区域的状态       
+        self.show_packets = False
         self.init_ui()
 
     def set_window_icon(self):
@@ -48,20 +65,231 @@ class ModbusBabyGUI(QMainWindow):
         except Exception as e:
             self.logger.exception("Error setting window icon")
 
- 
     def init_ui(self):
+        self.create_ui_elements()
+        self.setup_validators()
+        self.connect_button.clicked.disconnect()  # 断开所有之前的连接
+        self.connect_button.clicked.connect(self.toggle_connection)
+        buttons = [self.connect_button, self.read_button, self.write_button,
+               self.start_polling_button, self.stop_polling_button]
+        for button in buttons:
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            button.setMinimumSize(80, 32)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        self.main_layout = QVBoxLayout(central_widget)
-        self.setMinimumSize(650, 600)  # 设置最小大小
-        self.resize(650, 600)  # 设置初始大小
-        # 创建所有UI元素
-        self.create_ui_elements()
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
 
-        # 设置布局
-        self.setup_layout()
+        # 1. Title row
+        self.add_title_row(main_layout)
+        #2 Setting area
+        self.add_settings_area(main_layout)
 
-        self.update_data_type_visibility()
+        # 3. Display area
+        display_splitter = QSplitter(Qt.Orientation.Vertical)
+        main_splitter = self.add_display_area(display_splitter)
+        main_layout.addWidget(main_splitter, 1)  # 1 是拉伸因子
+        # 4. Polling settings
+        self.add_polling_settings(main_layout)
+
+    def setup_validators(self):
+        # 为从站地址添加验证器
+        slave_validator = QIntValidator(0, 247, self)
+        self.slave_id_tcp.setValidator(slave_validator)
+        self.slave_id_rtu.setValidator(slave_validator)
+
+    def add_title_row(self, parent_layout):
+        title_layout = QHBoxLayout()
+        # Logo
+        logo_path = get_resource_path('resources/modbuslogo.png')
+        pixmap = QPixmap(logo_path)
+        if not pixmap.isNull():
+            self.logo_label.setPixmap(pixmap.scaled(150, 50, Qt.AspectRatioMode.KeepAspectRatio))
+        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)  # 垂直居中对齐
+        title_layout.addWidget(self.logo_label)
+
+        title_layout.addStretch(1)
+
+        # Author title
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)  # 垂直居中对齐
+        title_layout.addWidget(self.title_label)
+
+        parent_layout.addLayout(title_layout)
+
+    def add_settings_area(self, parent_layout):
+        settings_group = QGroupBox("")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(5)
+        settings_layout.setContentsMargins(5, 5, 5, 5)
+
+        # 1. Connection settings
+        connection_layout = QHBoxLayout()
+        connection_layout.addWidget(QLabel("连接类型:"))
+        connection_layout.addWidget(self.connection_type)
+        connection_layout.addStretch(1)
+        connection_layout.addWidget(self.connect_button)
+        settings_layout.addLayout(connection_layout)
+        # 2. Settings stack (TCP/RTU 设置)
+        stack_layout = QHBoxLayout()
+        stack_layout.addWidget(self.settings_stack)
+        settings_layout.addLayout(stack_layout)
+
+        settings_layout.addWidget(self.settings_stack)
+
+        # 3. 寄存器操作部分
+        register_layout = QHBoxLayout()
+        register_layout.addWidget(QLabel("起始地址:"))
+        register_layout.addWidget(self.start_address_input)
+        register_layout.addWidget(QLabel("结束地址:"))
+        register_layout.addWidget(self.end_address_input)
+        register_layout.addWidget(QLabel("寄存器类型:"))
+        register_layout.addWidget(self.register_type_combo)
+        register_layout.addWidget(QLabel("数据类型:"))
+        register_layout.addWidget(self.data_type_combo)
+        register_layout.addWidget(QLabel("字节序:"))
+        register_layout.addWidget(self.byte_order_combo)
+        register_layout.addWidget(QLabel("字序:"))
+        register_layout.addWidget(self.word_order_combo)
+        register_layout.addStretch(1)
+        register_layout.addWidget(self.read_button)
+        settings_layout.addLayout(register_layout)
+
+        # 4. 值输入和读写按钮
+        value_layout = QHBoxLayout()
+        value_layout.addWidget(QLabel("数值:"))
+        value_layout.addWidget(self.value_input)
+        value_layout.addWidget(self.write_button)
+        settings_layout.addLayout(value_layout)
+
+        # 确保设置区域不会过度扩展
+        settings_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+        parent_layout.addWidget(settings_group)
+
+        # 创建并设置 TCP 和 RTU 设置页面
+        self.create_tcp_settings_page()
+        self.create_rtu_settings_page()
+    def create_tcp_settings_page(self):
+        tcp_widget = QWidget()
+        tcp_layout = QHBoxLayout(tcp_widget)
+        tcp_layout.addSpacing(10)
+        tcp_layout.addWidget(QLabel("IP 地址:"))
+        default_ip = self.config.get('tcp', {}).get('ip') if self.config else 'localhost'
+        self.ip_address = QLineEdit(default_ip)
+        self.ip_address.setFixedWidth(400)
+        tcp_layout.addWidget(self.ip_address)
+        tcp_layout.addWidget(QLabel("端口:"))
+        default_port = str(self.config.get('tcp', {}).get('port', 502))
+        self.port = QLineEdit(default_port)
+        tcp_layout.addWidget(self.port)
+        tcp_layout.addWidget(QLabel("从站地址:"))
+        default_slave_id = str(self.config.get('tcp', {}).get('slave_id', 1))
+        self.slave_id_tcp = QLineEdit(default_slave_id)
+        tcp_layout.addWidget(self.slave_id_tcp)
+        tcp_layout.addStretch(1)
+        self.settings_stack.addWidget(tcp_widget)
+
+    def create_rtu_settings_page(self):
+        rtu_widget = QWidget()
+        rtu_layout = QHBoxLayout(rtu_widget)
+        rtu_layout.addSpacing(10)
+        rtu_layout.addWidget(QLabel("串口:"))
+        rtu_layout.addWidget(self.serial_port)
+        rtu_layout.addWidget(QLabel("波特率:"))
+        rtu_layout.addWidget(self.baud_rate)
+        rtu_layout.addWidget(QLabel("数据位:"))
+        rtu_layout.addWidget(self.data_bits)
+        rtu_layout.addWidget(QLabel("停止位:"))
+        rtu_layout.addWidget(self.stop_bits)
+        rtu_layout.addWidget(QLabel("校验:"))
+        rtu_layout.addWidget(self.parity)
+        rtu_layout.addWidget(QLabel("从站地址:"))
+        rtu_layout.addWidget(self.slave_id_rtu)
+        rtu_layout.addStretch(1)
+        self.settings_stack.addWidget(rtu_widget)
+
+    def add_display_area(self, parent_splitter):
+        # 创建一个垂直分割器作为主容器
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # Info area
+        info_widget = QWidget()
+        info_layout = QVBoxLayout(info_widget)
+        info_header = QHBoxLayout()
+        info_layout.setContentsMargins(10, 0, 10, 0)
+        info_header.addWidget(QLabel("信息:"))
+        info_header.addStretch(1)
+        info_header.addWidget(self.clear_info_button)
+        info_layout.addLayout(info_header)
+        info_layout.setContentsMargins(10, 0, 10, 0)
+        info_layout.addWidget(self.log_output)
+        main_splitter.addWidget(info_widget)
+
+        # Packet area
+        packet_widget = QWidget()
+        packet_layout = QVBoxLayout(packet_widget)
+        packet_layout.setContentsMargins(10, 0, 10, 0)
+
+        # 创建分割器
+        packet_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 发送区域
+        sent_widget = QWidget()
+        sent_layout = QVBoxLayout(sent_widget)
+        sent_layout.setContentsMargins(0, 0, 0, 0)
+        #sent_layout.setSpacing(0)  # 设置垂直间距为0
+        sent_header = QHBoxLayout()
+        #sent_header.setContentsMargins(0, 0, 0, 0)
+        sent_header.addWidget(QLabel("发送的报文:"))
+
+        sent_layout.addLayout(sent_header)
+        sent_layout.addWidget(self.sent_packet_display)
+        packet_splitter.addWidget(sent_widget)
+
+        # 接收区域
+        received_widget = QWidget()
+        received_layout = QVBoxLayout(received_widget)
+        received_layout.setContentsMargins(0, 0, 0, 0)
+        #received_layout.setSpacing(0)  # 设置垂直间距为0
+        received_header = QHBoxLayout()
+        #received_header.setContentsMargins(0, 0, 0, 0)
+        received_header.addWidget(QLabel("接收的报文:"))
+
+        received_layout.addLayout(received_header)
+        received_layout.addWidget(self.received_packet_display)
+        packet_splitter.addWidget(received_widget)
+        packet_layout.addWidget(packet_splitter)
+
+        main_splitter.addWidget(packet_widget)
+
+
+        # 将主分割器添加到父布局
+        parent_splitter.addWidget(main_splitter)
+        return main_splitter
+
+    def add_polling_settings(self, parent_layout):
+        polling_layout = QHBoxLayout()
+        polling_layout.addStretch(1)
+        polling_layout.addWidget(QLabel("轮询间隔 (ms):"))
+        polling_layout.addSpacing(10)
+        polling_layout.addWidget(self.polling_interval_input)
+        polling_layout.addStretch(1)
+        polling_layout.addWidget(self.start_polling_button)
+        polling_layout.addWidget(self.stop_polling_button)
+        polling_layout.addStretch(1)
+        parent_layout.addLayout(polling_layout)
+
+
+
+
+    def on_connection_type_changed(self, index):
+        self.settings_stack.setCurrentIndex(index)
+        if index == 0:  # TCP
+            self.load_tcp_settings()
+        else:  # RTU
+            self.load_rtu_settings()
 
     def closeEvent(self, event):
         self.save_window_state()
@@ -80,14 +308,10 @@ class ModbusBabyGUI(QMainWindow):
         state = settings.value("windowState")
         if state:
             self.restoreState(state)
-
-
-
-
     def create_ui_elements(self):
         # 标题
         self.title_label = QLabel("😄大牛大巨婴👌")
-        font = QFont()
+        font = QFont('NotoEmoji')
         font.setPointSize(14)
         font.setBold(True)
         self.title_label.setFont(font)
@@ -95,193 +319,240 @@ class ModbusBabyGUI(QMainWindow):
 
         # Logo
         self.logo_label = QLabel()
-        logo_path = get_resource_path('resources/modbuslogo.png')
-        pixmap = QPixmap(logo_path)
-        if pixmap.isNull():
-            print(f"无法加载logo: {logo_path}")  # 添加调试信息
-        else:
-            self.logo_label.setPixmap(pixmap)
-            self.logo_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-            
-        self.logo_label.setPixmap(pixmap)
-        self.logo_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.logo_label.setStyleSheet('background: transparent;')
+        # 设置所有输入框和下拉框的固定高度
+        default_height = 28  # 你可以根据需要调整这个值
 
+        # 连接类型选择
+        self.connection_type = QComboBox()
+        self.connection_type.addItems(["Modbus TCP", "Modbus RTU"])
+        self.connection_type.setFixedHeight(default_height)
+        self.connection_type.setMaximumWidth(140)
+        self.connection_type.currentIndexChanged.connect(self.on_connection_type_changed)
 
+        # 设置默认连接类型
+        default_connection_type = self.config.get('default_connection_type', 'TCP')
+        self.connection_type.setCurrentText(f"Modbus {default_connection_type}")
 
-        # 连接设置
-        self.host_input = QLineEdit(self.config.get('default_host', 'localhost'))
-        self.port_input = QLineEdit(str(self.config.get('default_port', 502)))
-        self.slave_id_input = QLineEdit(str(self.slave_id))
         self.connect_button = QPushButton("连接")
-        self.connect_button.clicked.connect(self.connect_to_device)
+        self.connect_button.clicked.connect(self.toggle_connection)
+
+
+        # 修改 settings_stack 的创建和设置
+        self.settings_stack = QStackedWidget()
+        self.settings_stack.setContentsMargins(0, 0, 0, 0)
+
+        # TCP 设置元素
+        self.ip_address = QLineEdit()
+        self.ip_address.setFixedHeight(default_height)
+
+        self.port = QLineEdit()
+        self.port.setFixedWidth(60)
+        self.port.setFixedHeight(default_height)
+
+        self.slave_id_tcp = QLineEdit()
+        self.slave_id_tcp.setFixedWidth(90)
+        self.slave_id_tcp.setFixedHeight(default_height)
+
+        # RTU 设置元素
+        self.serial_port = QComboBox()
+        self.serial_port.setFixedWidth(250)
+        self.serial_port.setFixedHeight(default_height)
+
+        self.baud_rate = QComboBox()
+        self.baud_rate.addItems(["9600", "19200", "38400", "57600", "115200"])
+        self.baud_rate.setFixedWidth(90)
+        self.baud_rate.setFixedHeight(default_height)
+
+        self.data_bits = QComboBox()
+        self.data_bits.addItems(["8", "7"])
+        self.data_bits.setFixedWidth(60)
+        self.data_bits.setFixedHeight(default_height)
+
+        self.stop_bits = QComboBox()
+        self.stop_bits.addItems(["1", "2"])
+        self.stop_bits.setFixedWidth(60)
+        self.stop_bits.setFixedHeight(default_height)
+
+        self.parity = QComboBox()
+        self.parity.addItems(["None", "Even", "Odd"])
+        self.parity.setFixedWidth(80)
+        self.parity.setFixedHeight(default_height)
+
+        self.slave_id_rtu = QLineEdit()
+        self.slave_id_rtu.setFixedWidth(80)
+        self.slave_id_rtu.setFixedHeight(default_height)
 
         # 操作区域
-        self.start_address_input = QLineEdit()
-        self.end_address_input = QLineEdit()
-        self.value_input = QLineEdit()
+        # 地址输入框
+        self.start_address_input = QLineEdit("1")
+        self.start_address_input.setFixedWidth(80)
+        self.start_address_input.setFixedHeight(default_height)
+        self.end_address_input = QLineEdit("32")
+        self.end_address_input.setFixedWidth(80)
+        self.end_address_input.setFixedHeight(default_height)
+        # 设置地址输入框的验证器
+        address_validator = QIntValidator(0, 65535, self)
+        self.start_address_input.setValidator(address_validator)
+        self.end_address_input.setValidator(address_validator)
+
         self.register_type_combo = QComboBox()
         self.register_type_combo.addItems(['Holding Register', 'Input Register', 'Discrete Input', 'Coil'])
         self.register_type_combo.currentTextChanged.connect(self.update_data_type_visibility)
-        self.data_type_combo = QComboBox()
-        self.data_type_combo.addItems(['INT16', 'UINT16', 'INT32', 'UINT32', 'FLOAT32', 'FLOAT64', 'BOOL'])
-        self.read_button = QPushButton("读取")
-        self.read_button.clicked.connect(self.read_register)
-        self.write_button = QPushButton("写入")
-        self.write_button.clicked.connect(self.write_register)
-        # 调整输入框的最小宽度
-        self.start_address_input.setMinimumWidth(100)
-        self.end_address_input.setMinimumWidth(100)
-        self.value_input.setMinimumWidth(300)
+        self.register_type_combo.setFixedWidth(150)
+        self.register_type_combo.setFixedHeight(default_height)
 
+        self.data_type_combo = QComboBox()
+        self.data_type_combo.addItems(['BYTE', 'INT16', 'UINT16', 'INT32', 'UINT32', 'INT64', 'UINT64', 'FLOAT32', 'FLOAT64', 'BOOL'])
+        self.data_type_combo.setFixedWidth(100)
+        self.data_type_combo.setFixedHeight(default_height)
+
+        self.byte_order_combo = QComboBox()
+        self.byte_order_combo.addItems(['AB', 'BA'])
+        self.byte_order_combo.setToolTip("字节序: AB (Big Endian), BA (Little Endian)")
+        self.byte_order_combo.setFixedWidth(80)
+        self.byte_order_combo.currentTextChanged.connect(self.update_byte_order)
+        self.byte_order_combo.setFixedHeight(default_height)
+
+        self.word_order_combo = QComboBox()
+        self.word_order_combo.addItems(['1234', '4321'])
+        self.word_order_combo.setToolTip("字序: 1234 (Big Endian), 4321 (Little Endian)")
+        self.word_order_combo.setFixedWidth(80)
+        self.word_order_combo.currentTextChanged.connect(self.update_word_order)
+        self.word_order_combo.setFixedHeight(default_height)
+
+        self.read_button = QPushButton("读取")
+        self.read_button.setEnabled(False)
+        self.read_button.clicked.connect(self.read_register)
+
+        self.value_input = QLineEdit()
+        self.value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.value_input.setFixedHeight(default_height)
+
+        self.write_button = QPushButton("写入")
+        self.write_button.setEnabled(False)
+        self.write_button.clicked.connect(self.write_register)
 
         # 报文显示区域
-        self.sent_packet_display = QPlainTextEdit()
-        self.sent_packet_display.setReadOnly(True)
-        self.received_packet_display = QPlainTextEdit()
-        self.received_packet_display.setReadOnly(True)
 
+        self.sent_packet_display = QTextEdit()
+        self.sent_packet_display.setReadOnly(True)
+        self.received_packet_display = QTextEdit()
+        self.received_packet_display.setReadOnly(True)
+        # 设置两个文本框的高度相同
+        self.sent_packet_display.setMinimumHeight(150)  # 设置最小高度
+        self.received_packet_display.setMinimumHeight(150)  # 设置最小高度
         # 日志输出
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
 
+        #self.sent_packet_display.setStyleSheet("background-color: #f0f0f0;")
+        #self.received_packet_display.setStyleSheet("background-color: #e0e0e0;")
         # 清空按钮
-        self.clear_info_button = QPushButton("清空信息区")
-        self.clear_info_button.clicked.connect(self.clear_info)
-        self.clear_packet_button = QPushButton("清空报文区")
-        self.clear_packet_button.clicked.connect(self.clear_packets)
+        self.clear_info_button = QPushButton("清空")
+        self.clear_info_button.clicked.connect(self.clear_all)
 
         # 轮询设置
         self.polling_interval_input = QLineEdit(str(self.config.get('polling_interval', 1000)))
+        self.polling_interval_input.setFixedHeight(default_height)
         self.start_polling_button = QPushButton("开始轮询")
+        self.start_polling_button.setEnabled(False)
         self.start_polling_button.clicked.connect(self.start_polling)
         self.stop_polling_button = QPushButton("停止轮询")
-        self.stop_polling_button.clicked.connect(self.stop_polling)
         self.stop_polling_button.setEnabled(False)
-        
+        self.stop_polling_button.clicked.connect(self.stop_polling)
+
+        self.stop_polling_button.setEnabled(False)
 
 
-    def setup_layout(self):
-        # 主布局
-        main_layout = QVBoxLayout() 
-        # 第一行：Logo 和标题
-        title_layout = QHBoxLayout()
-        title_layout.addWidget(self.logo_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        title_layout.addStretch(1)  # 添加弹性空间        
-        title_layout.addWidget(self.title_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        main_layout.addLayout(title_layout)
-        
-            # 设置按钮大小一致
-        button_width = 100
-        button_height = 30
-        self.connect_button.setFixedSize(button_width, button_height)
-        self.read_button.setFixedSize(button_width, button_height)
-        self.write_button.setFixedSize(button_width, button_height)
+    def update_byte_order(self, order):
+        self.byte_order = 'big' if order == 'AB' else 'little'
 
-        # 第二行：连接设置
-        connection_layout = QHBoxLayout()
-        connection_layout.addWidget(QLabel("主机:"))
-        connection_layout.addWidget(self.host_input)
-        connection_layout.addWidget(QLabel("端口:"))
-        connection_layout.addWidget(self.port_input)
-        connection_layout.addWidget(QLabel("从设备ID:"))
-        connection_layout.addWidget(self.slave_id_input)
-        connection_layout.addWidget(self.connect_button)
-        connection_layout.addStretch(1)
-        main_layout.addLayout(connection_layout)    
+    def update_word_order(self, order):
+        self.word_order = 'big' if order == '1234' else 'little'
 
-        # 第三行：操作区域
-        operation_layout = QHBoxLayout()
-        operation_layout.addWidget(QLabel("起始地址:"))
-        operation_layout.addWidget(self.start_address_input)
-        operation_layout.addWidget(QLabel("结束地址:"))
-        operation_layout.addWidget(self.end_address_input)
-        operation_layout.addWidget(self.register_type_combo)
-        operation_layout.addWidget(self.data_type_combo)
-        operation_layout.addWidget(self.read_button)
-        operation_layout.addStretch(1)
-        main_layout.addLayout(operation_layout)
+    def get_timestamp(self):
+        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-        # 修改第四行：值输入框和写入按钮
-        value_layout = QHBoxLayout()
-        value_layout.addWidget(QLabel("值:"))
-        value_layout.addWidget(self.value_input, 1)  # 使用拉伸因子 1
-        value_layout.addWidget(self.write_button)
-        main_layout.addLayout(value_layout)
+    def get_timestamp_with_operation(self, operation):
+        timestamp = self.get_timestamp()
+        return f"{timestamp} {operation}"
 
-     
-
-        # 信息区（日志输出）和清空按钮
-        info_layout = QVBoxLayout()
-        # 信息区标题和清空按钮
-        clear_info_layout = QHBoxLayout()
-        clear_info_layout.addWidget(QLabel("信息:"))
-        clear_info_layout.addStretch(1)        
-        clear_info_layout.addWidget(self.clear_info_button)
-        info_layout.addLayout(clear_info_layout)
-        # 日志输出
-        info_layout.addWidget(self.log_output)
-        main_layout.addLayout(info_layout)
-
-        # 报文显示区域
-        packet_layout = QGridLayout()
-
-        # 发送的报文区
-        packet_layout.addWidget(QLabel("发送的报文:"), 0, 0)
-        packet_layout.addWidget(self.sent_packet_display, 1, 0)
-
-        # 接收的报文区
-        received_header = QHBoxLayout()
-        received_header.addWidget(QLabel("接收的报文:"))
-        received_header.addStretch(1)
-        received_header.addWidget(self.clear_packet_button)
-        
-        packet_layout.addLayout(received_header, 0, 1)
-        packet_layout.addWidget(self.received_packet_display, 1, 1)
-
-        main_layout.addLayout(packet_layout)
-
-        # 轮询设置
-        polling_layout = QHBoxLayout()
-        polling_layout.addWidget(QLabel("轮询间隔 (ms):"))
-        polling_layout.addWidget(self.polling_interval_input)
-        polling_layout.addWidget(self.start_polling_button)
-        polling_layout.addWidget(self.stop_polling_button)
-        polling_layout.addStretch(1)
-        main_layout.addLayout(polling_layout)
-
- 
-        # 设置主布局
-        central_widget = QWidget()
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
-
-##########################################################################################
-
+    def toggle_connection(self):
+        if not self.is_connected:
+            self.connect_to_device()
+        else:
+            self.disconnect_from_device()
 
     def connect_to_device(self):
-        host = self.host_input.text()
-        port = int(self.port_input.text())
-        self.slave_id = int(self.slave_id_input.text())
-        self.logger.info(f"尝试连接到 {host}:{port}，从设备ID: {self.slave_id}")
+        if self.is_connected:
+            self.logger.info("已经连接，忽略此次连接请求")
+            return
+        self.logger.info("连接按钮被点击")
         if self.modbus_debugger is None:
-            self.modbus_debugger = ModbusDebugger(host, port, self.slave_id)
-        if self.modbus_debugger.connect():
-            self.log_output.append(f"成功连接到 {host}:{port}，从设备ID: {self.slave_id}")
-            # 添加以下调试代码
-            print("Debug - 连接成功。尝试进行测试读取。")
-            result, sent, received = self.modbus_debugger.read_holding_registers(0, 1, self.slave_id)
-            print(f"Debug - 测试读取结果: {result}")
-            print(f"Debug - 测试读取发送的报文: {sent}")
-            print(f"Debug - 测试读取接收的报文: {received}")
+            self.logger.error("ModbusDebugger 实例不存在")
+            return
+
+        try:
+            if self.connection_type.currentText() == "Modbus TCP":
+                ip = self.ip_address.text()
+                port = int(self.port.text())
+                slave_id = int(self.slave_id_tcp.text())
+                if not 0 <= slave_id <= 247:
+                    raise ValueError("从站地址必须在 0-247 范围内")
+                success = self.modbus_debugger.connect_tcp(ip, port, slave_id)
+            else:  # Modbus RTU
+                port = self.serial_port.currentText()
+                baud_rate = int(self.baud_rate.currentText())
+                data_bits = int(self.data_bits.currentText())
+                stop_bits = int(self.stop_bits.currentText())
+                parity = self.parity.currentText()
+                slave_id = int(self.slave_id_rtu.text())
+                if not 0 <= slave_id <= 247:
+                    raise ValueError("从站地址必须在 0-247 范围内")
+                success = self.modbus_debugger.connect_rtu(port, baud_rate, data_bits, stop_bits, parity, slave_id)
+
+            if success:
+                self.is_connected = True
+                self.connect_button.setText("断开")
+                self.log_output.append(f"{self.connection_type.currentText()} 连接成功")
+                # 启用操作按钮
+                self.read_button.setEnabled(True)
+                self.write_button.setEnabled(True)
+                self.start_polling_button.setEnabled(True)
+            else:
+                self.log_output.append(f"{self.connection_type.currentText()} 连接失败")
+        except Exception as e:
+            self.logger.error(f"连接时发生错误: {str(e)}")
+            self.log_output.append(f"连接错误: {str(e)}")
+
+    def disconnect_from_device(self):
+        if not self.is_connected:
+            self.logger.info("当前未连接，忽略此次断开请求")
+            return
+        if self.modbus_debugger and self.modbus_debugger.client:
+            try:
+                self.modbus_debugger.client.close()
+                self.is_connected = False
+                self.connect_button.setText("连接")
+                self.log_output.append("已断开连接")
+                # 禁用操作按钮
+                self.read_button.setEnabled(False)
+                self.write_button.setEnabled(False)
+                self.start_polling_button.setEnabled(False)
+                self.stop_polling_button.setEnabled(False)
+                # 确保停止轮询
+                is_polling = self.polling_timer.isActive()
+                if is_polling:
+                    self.stop_polling()
+                    self.log_output.append("停止轮询")
+
+            except Exception as e:
+                self.logger.error(f"断开连接时发生错误: {str(e)}")
+                self.log_output.append(f"断开连接错误: {str(e)}")
         else:
-            self.log_output.append(f"连接失败: {host}:{port}")
-            self.log_output.append("请确保 Modbus TCP 服务器正在运行，并检查主机、端口和从设备ID设置")
-
-            # 添加以下调试代码
-            print("Debug - 连接失败。无法进行测试读取。")
-
+            self.logger.warning("尝试断开连接，但客户端不存在")
+            self.log_output.append("无法断开连接：客户端不存在")
 
     def update_address_table(self, df):
         self.address_table.setRowCount(len(df))
@@ -290,7 +561,6 @@ class ModbusBabyGUI(QMainWindow):
             self.address_table.setItem(i, 1, QTableWidgetItem(row['描述']))
             self.address_table.setItem(i, 2, QTableWidgetItem(row['数据类型']))
             self.address_table.setItem(i, 3, QTableWidgetItem(row['单位']))
-
 
     def toggle_packet_display(self):
         self.show_packets = not self.show_packets
@@ -305,48 +575,84 @@ class ModbusBabyGUI(QMainWindow):
         self.sent_packets.clear()
         self.received_packets.clear()
 
+    def clear_all(self):
+        self.clear_info()
+        self.clear_packets()
+
     def copy_packets(self):
         clipboard = QApplication.clipboard()
         text = f"发送的报文:\n{self.sent_packets.toPlainText()}\n\n接收的报文:\n{self.received_packets.toPlainText()}"
         clipboard.setText(text)
 
     def read_register(self):
+        if not self.is_connected:
+            self.logger.error("未连接到设备")
+            self.log_output.append("错误：未连接到设备")
+            return
         if self.modbus_debugger:
-            start_address = int(self.start_address_input.text())
-            end_address = int(self.end_address_input.text())
-            register_type = self.register_type_combo.currentText()
-            data_type = self.data_type_combo.currentText()
-
-            count = end_address - start_address + 1
-            # 根据数据类型调整读取的寄存器数量
-            registers_per_value = 1
-            if data_type in ['INT32', 'UINT32', 'FLOAT32']:
-                registers_per_value = 2
-            elif data_type == 'FLOAT64':
-                registers_per_value = 4
-
-            # 确保读取的寄存器数量是正确的倍数
-            count = max(count, registers_per_value)
-            if count % registers_per_value != 0:
-                count = (count // registers_per_value + 1) * registers_per_value
-            
-            self.logger.debug(f"尝试读取 - 类型: {register_type}, 起始地址: {start_address}, 数量: {count}, 数据类型: {data_type}")
 
             try:
+                start_address = int(self.start_address_input.text())
+                end_address = int(self.end_address_input.text())
+                slave_id = int(self.slave_id_tcp.text() if self.connection_type.currentText() == "Modbus TCP" else self.slave_id_rtu.text())
+                self.logger.debug(f"Reading register with slave ID: {slave_id}")   
+                if not 0 <= slave_id <= 247:
+                    raise ValueError("从站地址必须在 0-247 范围内")
+
+                register_type = self.register_type_combo.currentText()
+                data_type = self.data_type_combo.currentText()
+
+                count = end_address - start_address + 1
+                # 根据数据类型调整读取的寄存器数量
+                registers_per_value = 1
+                if data_type in ['INT32', 'UINT32', 'FLOAT32']:
+                    registers_per_value = 2
+                elif data_type in ['INT64', 'UINT64', 'FLOAT64']:
+                    registers_per_value = 4
+
+                # 确保读取的寄存器数量是正确的倍数
+                count = max(count, registers_per_value)
+                if count % registers_per_value != 0:
+                    count = (count // registers_per_value + 1) * registers_per_value
+
+                self.logger.debug(f"尝试读取 - 类型: {register_type}, 起始地址: {start_address}, 数量: {count}, 数据类型: {data_type}")
+
                 if register_type == 'Holding Register':
-                    result, sent_packet, received_packet = self.modbus_debugger.read_holding_registers(start_address, count, self.slave_id, data_type)
+                    result, sent_packet, received_packet = self.modbus_debugger.read_holding_registers(
+                        start_address, count, slave_id, data_type,
+                        byte_order=self.byte_order, word_order=self.word_order
+                    )
                 elif register_type == 'Input Register':
-                    result, sent_packet, received_packet = self.modbus_debugger.read_input_registers(start_address, count, self.slave_id, data_type)
+                    result, sent_packet, received_packet = self.modbus_debugger.read_input_registers(
+                        start_address, count, slave_id, data_type,
+                        byte_order=self.byte_order, word_order=self.word_order
+                    )
                 elif register_type == 'Discrete Input':
-                    result, sent_packet, received_packet = self.modbus_debugger.read_discrete_inputs(start_address, count, self.slave_id)
+                    result, sent_packet, received_packet = self.modbus_debugger.read_discrete_inputs(
+                        start_address, count, slave_id,
+                        byte_order=self.byte_order, word_order=self.word_order
+                    )
                 elif register_type == 'Coil':
-                    result, sent_packet, received_packet = self.modbus_debugger.read_coils(start_address, count, self.slave_id)
+                    result, sent_packet, received_packet = self.modbus_debugger.read_coils(
+                        start_address, count, slave_id,
+                        byte_order=self.byte_order, word_order=self.word_order
+                    )
                 else:
                     self.logger.error(f"不支持的寄存器类型: {register_type}")
                     return
 
-                self.sent_packets.append(sent_packet)
-                self.received_packets.append(received_packet)
+                if result and isinstance(result, tuple) and len(result) == 2:
+                    sent_packet, received_packet = result
+                send_time = self.get_timestamp_with_operation(": READ")
+                receive_time = self.get_timestamp_with_operation(": READ")
+
+                formatted_sent = self.modbus_debugger.format_packet(sent_packet)
+                formatted_received = self.modbus_debugger.format_packet(received_packet)
+
+                self.sent_packets.append(f"{send_time}\n{formatted_sent}")
+                self.received_packets.append(f"{receive_time}\n{formatted_received}")
+
+                self.update_packet_display()
 
                 if result is not None:
                     self.logger.debug(f"读取成功 - 结果: {result}")
@@ -359,15 +665,18 @@ class ModbusBabyGUI(QMainWindow):
                 else:
                     self.logger.error(f"读取 {register_type} {start_address}-{end_address} 失败")
                     self.log_output.append(f"读取 {register_type} {start_address}-{end_address} 失败")
-                self.update_packet_display()
+
             except Exception as e:
-                self.logger.error(f"读取操作发生错误: {str(e)}")
-                self.log_output.append(f"读取操作发生错误: {str(e)}")     
+                self.log_output.append(f"读取操作发生错误: {repr(e)}")
         else:
-            self.logger.error("Modbus 调试器未初始化")
-            self.log_output.append("Modbus 调试器未初始化")
+            self.logger.error(f"读取操作发生错误: {str(e)}")
+            self.log_output.append(f"读取操作发生错误: {str(e)}")
 
     def write_register(self):
+        if not self.is_connected:
+            self.logger.error("未连接到设备")
+            self.log_output.append("错误：未连接到设备")
+            return
         if not self.modbus_debugger or not self.modbus_debugger.client:
             self.log_output.append("错误：Modbus 客户端未连接")
             return
@@ -377,20 +686,30 @@ class ModbusBabyGUI(QMainWindow):
         register_type = self.register_type_combo.currentText()
         data_type = self.data_type_combo.currentText()
         value = self.value_input.text()
+        #values = self.data_processor.process_input_data(value, data_type, self.byte_order, self.word_order)
+        slave_id = int(self.slave_id_tcp.text() if self.connection_type.currentText() == "Modbus TCP" else self.slave_id_rtu.text())
+
+        if not 0 <= slave_id <= 247:
+            raise ValueError("从站地址必须在 0-247 范围内")
+
 
         try:
-            count = end_address - start_address + 1            
+            count = end_address - start_address + 1
             # 根据数据类型处理输入值
             if register_type == 'Coil':
                 values = [bool(int(v.strip())) for v in value.split(',')]
-                modbus_type = 'coil'
-                data_type = 'BOOL'  # 添加：强制将 Coil 的数据类型设置为 BOOL
+                success, message, result = self.modbus_debugger.write_coils(
+                    start_address, values, slave_id,
+                    byte_order=self.byte_order, word_order=self.word_order
+                )
             elif register_type == 'Holding Register':
-                if data_type in ['FLOAT32', 'FLOAT64']:
+                if data_type == 'BYTE':
+                    values = [int(v.strip()) & 0xFF for v in value.split(',')]
+                elif data_type in ['FLOAT32', 'FLOAT64']:
                     values = [float(v.strip()) for v in value.split(',')]
-                elif data_type in ['INT16','INT32']:
+                elif data_type in ['INT16','INT32','INT64']:
                     values = [int(v.strip()) for v in value.split(',')]
-                elif data_type in ['UINT16', 'UINT32']:  # 修改：单独处理 UINT 类型
+                elif data_type in ['UINT16', 'UINT32','UINT64']:  # 修改：单独处理 UINT 类型
                     values = []
                     for v in value.split(','):
                         int_value = int(v.strip())
@@ -402,59 +721,37 @@ class ModbusBabyGUI(QMainWindow):
                 else:
                     self.log_output.append(f"错误：不支持的数据类型 {data_type}")
                     return
-                modbus_type = 'holding'
+                success, message, result = self.modbus_debugger.write_registers(
+                    start_address, values, slave_id, data_type,
+                    byte_order=self.byte_order, word_order=self.word_order
+                )
+
             elif register_type in ['Input Register', 'Discrete Input'] :
                 self.log_output.append(f"错误：{register_type} 不支持写操作")
                 return
             else:
                 self.log_output.append(f"错误：未知的寄存器类型 {register_type}")
                 return
-       
-            # 检查数据类型和地址范围是否匹配
-            registers_per_value = 1
-            if data_type in ['INT32', 'UINT32', 'FLOAT32']:
-                registers_per_value = 2
-            elif data_type == 'FLOAT64':
-                registers_per_value = 4
 
-            if count % registers_per_value != 0:
-                self.log_output.append(f"错误：地址范围 ({count}) 不是 {data_type} 类型所需寄存器数 ({registers_per_value}) 的整数倍")
-                return
-
-            if len(values) * registers_per_value != count:
-                self.log_output.append(f"错误：输入值的数量 ({len(values)}) 与地址范围 ({count}) 不匹配")
-                return
-            
-            # 添加：检查 UINT 类型的值是否在有效范围内
-            if data_type == 'UINT16':
-                for v in values:
-                    if v > 65535:
-                        raise ValueError(f"UINT16 值超出范围 (0-65535): {v}")
-            elif data_type == 'UINT32':
-                for v in values:
-                    if v > 4294967295:
-                        raise ValueError(f"UINT32 值超出范围 (0-4294967295): {v}")
-           
-            success, message, result = self.modbus_debugger.write_registers(start_address, values, self.slave_id, data_type)
- 
-            # 修改：根据寄存器类型选择不同的写入方法
-            if register_type == 'Coil':
-                success, message, result = self.modbus_debugger.write_coils(start_address, values, self.slave_id)
-            else:  # Holding Register
-                success, message, result = self.modbus_debugger.write_registers(start_address, values, self.slave_id, data_type)
-
+            self.logger.debug(f"Write operation result: {result}")  # 添加这行来记录 result 的内容
+            # 信息显示
             if success:
                 self.log_output.append(f"成功写入 {register_type} {start_address}-{end_address}: {value}")
             else:
                 self.log_output.append(f"写入失败: {message}")
-            
-           
-            # 更新报文显示
-            if hasattr(result, 'sent_packet') and hasattr(result, 'received_packet'):
-                self.sent_packets.append(result.sent_packet)
-                self.received_packets.append(result.received_packet)
-                self.update_packet_display()
 
+            # 处理报文显示
+            if result and isinstance(result, tuple) and len(result) == 2:
+                sent_packet, received_packet = result
+                send_time = self.get_timestamp_with_operation(": WRITE")
+                receive_time = self.get_timestamp_with_operation(": WRITE")
+
+                self.sent_packets.append(f"[{send_time}]\n{sent_packet}")
+                self.received_packets.append(f"{receive_time}\n{received_packet}")
+                self.update_packet_display()
+                self.logger.debug("报文已添加到显示列表")
+            else:
+                self.logger.warning("无法获取发送或接收的报文")
         except ValueError as e:
             self.log_output.append(f"错误：输入值无效 - {str(e)}")
         except Exception as e:
@@ -469,6 +766,10 @@ class ModbusBabyGUI(QMainWindow):
             self.data_type_combo.setEnabled(True)
 
     def start_polling(self):
+        if not self.is_connected:
+            self.logger.error("未连接到设备，无法开始轮询")
+            self.log_output.append("错误：未连接到设备，无法开始轮询")
+            return
         interval = int(self.polling_interval_input.text())
         self.polling_timer.start(interval)
         self.start_polling_button.setEnabled(False)
@@ -477,92 +778,156 @@ class ModbusBabyGUI(QMainWindow):
 
     def stop_polling(self):
         self.polling_timer.stop()
-        self.start_polling_button.setEnabled(True)
         self.stop_polling_button.setEnabled(False)
+        if self.is_connected:
+            self.start_polling_button.setEnabled(True)
+        else:
+            self.start_polling_button.setEnabled(False)
         self.log_output.append("停止轮询")
-
     def poll_register(self):
+        if not self.is_connected:
+            self.logger.error("未连接到设备")
+            self.log_output.append("错误：未连接到设备")
+            self.stop_polling()  # 停止轮询
+            return
         if self.modbus_debugger:
-            start_address = int(self.start_address_input.text())
-            end_address = int(self.end_address_input.text())
-            register_type = self.register_type_combo.currentText()
-            data_type = self.data_type_combo.currentText()
+            try:
+                start_address = int(self.start_address_input.text())
+                end_address = int(self.end_address_input.text())
+                register_type = self.register_type_combo.currentText()
+                data_type = self.data_type_combo.currentText()
+                slave_id = int(self.slave_id_tcp.text() if self.connection_type.currentText() == "Modbus TCP" else self.slave_id_rtu.text())
+                count = end_address - start_address + 1
 
-            count = end_address - start_address + 1
+                # 根据数据类型调整读取的寄存器数量
+                registers_per_value = 1
+                if data_type in ['INT32', 'UINT32', 'FLOAT32']:
+                    registers_per_value = 2
+                elif data_type in ['INT64', 'UINT64','FLOAT64']:
+                    registers_per_value = 4
 
-            # 根据数据类型调整读取的寄存器数量
-            registers_per_value = 1
-            if data_type in ['INT32', 'UINT32', 'FLOAT32']:
-                registers_per_value = 2
-            elif data_type == 'FLOAT64':
-                registers_per_value = 4
+                # 确保读取的寄存器数量是正确的倍数
+                count = max(count, registers_per_value)
+                if count % registers_per_value != 0:
+                    count = (count // registers_per_value + 1) * registers_per_value
+           
+                if register_type == 'Holding Register':
+                    result, sent_packet, received_packet = self.modbus_debugger.read_holding_registers(start_address, count, slave_id)
+                elif register_type == 'Input Register':
+                    result, sent_packet, received_packet = self.modbus_debugger.read_input_registers(start_address, count, slave_id)
+                elif register_type == 'Discrete Input':
+                    result, sent_packet, received_packet = self.modbus_debugger.read_discrete_inputs(start_address, count, slave_id)
+                elif register_type == 'Coil':
+                    result, sent_packet, received_packet = self.modbus_debugger.read_coils(start_address, count, slave_id)
 
-            # 确保读取的寄存器数量是正确的倍数
-            count = max(count, registers_per_value)
-            if count % registers_per_value != 0:
-                count = (count // registers_per_value + 1) * registers_per_value
+                # 添加时间戳
+                send_time = self.get_timestamp_with_operation(": POLLING")
+                receive_time = self.get_timestamp_with_operation(": POLLING")
+                formatted_sent = self.modbus_debugger.format_packet(sent_packet)
+                formatted_received = self.modbus_debugger.format_packet(received_packet)
 
-            if register_type == 'Holding Register':
-                result, sent_packet, received_packet = self.modbus_debugger.read_holding_registers(start_address, count, self.slave_id)
-            elif register_type == 'Input Register':
-                result, sent_packet, received_packet = self.modbus_debugger.read_input_registers(start_address, count, self.slave_id)
-            elif register_type == 'Discrete Input':
-                result, sent_packet, received_packet = self.modbus_debugger.read_discrete_inputs(start_address, count, self.slave_id)
-            elif register_type == 'Coil':
-                result, sent_packet, received_packet = self.modbus_debugger.read_coils(start_address, count, self.slave_id)
+                self.sent_packets.append(f"{send_time}\n{formatted_sent}")
+                self.received_packets.append(f"{receive_time}\n{formatted_received}")
 
-            self.sent_packets.append(sent_packet)
-            self.received_packets.append(received_packet)
+                self.update_packet_display()
 
-            if result is not None:
-                if register_type in ['Holding Register', 'Input Register']:
-                    processed_values = []
-                    for i in range(0, len(result), registers_per_value):
-                        value = self.modbus_debugger.process_data(result[i:i+registers_per_value], data_type)
-                        # 如果 process_data 返回的是列表，我们只取第一个元素
-                        processed_values.append(value[0] if isinstance(value, list) else value)
+                if result is not None:
+                    if register_type in ['Holding Register', 'Input Register']:
+                        processed_values = []
+                        for i in range(0, len(result), registers_per_value):
+                            value = self.modbus_debugger.process_data(result[i:i+registers_per_value], data_type)
+                            # 如果 process_data 返回的是列表，我们只取第一个元素
+                            processed_values.append(value[0] if isinstance(value, list) else value)
+                    else:
+                        processed_values = result
+
+                    # 将处理后的值转换为字符串
+                    values_str = ', '.join(map(str, processed_values))
+                    self.value_input.setText(values_str)
+                    self.log_output.append(f"轮询 {register_type} {start_address}-{end_address}: {values_str}")
                 else:
-                    processed_values = result
+                    self.log_output.append(f"轮询 {register_type} {start_address}-{end_address} 失败")
+            except Exception as e:
+                self.logger.error(f"轮询操作发生错误: {str(e)}")
+                self.log_output.append(f"轮询操作发生错误: {str(e)}")
+                self.stop_polling()  # 如果发生错误，也停止轮询
+        else:
+            self.logger.error("ModbusDebugger 实例不存在")
+            self.log_output.append("错误：ModbusDebugger 实例不存在")
+            self.stop_polling()  # 如果 ModbusDebugger 不存在，停止轮询
 
-                # 将处理后的值转换为字符串
-                values_str = ', '.join(map(str, processed_values))
-                self.value_input.setText(values_str)
-                self.log_output.append(f"轮询 {register_type} {start_address}-{end_address}: {values_str}")
-            else:
-                self.log_output.append(f"轮询 {register_type} {start_address}-{end_address} 失败")
-            self.update_packet_display()
 
     def format_result(self, result, data_type):
 
         if data_type == 'BOOL':
             return ', '.join('1' if bit else '0' for bit in result)
-        elif data_type in ['INT16', 'UINT16', 'INT32', 'UINT32']:
+        elif data_type == 'BYTE':
+            return ', '.join(f"{x:02X}" for x in result)
+        elif data_type in ['INT16', 'UINT16', 'INT32', 'UINT32', 'INT64', 'UINT64']:
             return ', '.join(map(str, result))
         elif data_type in ['FLOAT32', 'FLOAT64']:
             return ', '.join(f"{x:.6f}" for x in result)
         else:
             return str(result)
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.PaletteChange:
+            self.update_packet_display()
+        super().changeEvent(event)
 
+    def append_colored_text(self, text_edit, text):
+        cursor = text_edit.textCursor()
+        palette = QApplication.palette()
+        is_dark_mode = palette.color(QPalette.ColorRole.Window).lightness() < 128
+        default_color = palette.color(QPalette.ColorRole.Text)
+        highlight_color = palette.color(QPalette.ColorRole.Highlight)
+
+        format_time = QTextCharFormat()
+        if is_dark_mode:
+            format_time.setForeground(QColor(0, 255, 255))  # 深色模式使用青色
+        else:
+            format_time.setForeground(QColor("blue"))  # 浅色模式使用蓝色
+
+        format_data = QTextCharFormat()
+        format_data.setForeground(default_color)
+
+        lines = text.split('\n', 1)
+        if len(lines) > 0:
+            cursor.insertText(lines[0] + '\n', format_time)
+            #text_edit.append(lines[0])
+            if len(lines) > 1:
+                #text_edit.append(lines[1])
+                cursor.insertText(lines[1], format_data)
+        text_edit.append("")
 
     def update_packet_display(self):
-        sent_text = "\n".join(self.sent_packets[-10:])  # 只显示最近的10条
-        received_text = "\n".join(self.received_packets[-10:])  # 只显示最近的10条
-        print(f"Debug - Sent packets: {self.sent_packets}")  # 调试输出
-        print(f"Debug - Received packets: {self.received_packets}")  # 调试输出
-        
-        if not sent_text and not received_text:
-            print("Debug - No packets to display")
-            return
 
-        self.sent_packet_display.setPlainText(f"发送：\n{sent_text}")
-        self.received_packet_display.setPlainText(f"接收：\n{received_text}")
-        
-        print(f"Debug - Sent text set to: {sent_text}")
-        print(f"Debug - Received text set to: {received_text}")
+       # print(f"开始更新报文显示: 发送 {len(self.sent_packets)}, 接收 {len(self.received_packets)}")
 
-        # 强制更新显示
-        self.sent_packet_display.update()
-        self.received_packet_display.update()
+        self.sent_packet_display.clear()
+        self.received_packet_display.clear()
+
+        #self.sent_packet_display.append("发送：")
+        for packet in self.sent_packets:
+
+            self.append_colored_text(self.sent_packet_display,  packet)
+        #self.received_packet_display.append("接收：")
+        for packet in self.received_packets:
+
+            self.append_colored_text(self.received_packet_display, packet)
+
+
+
+        # 滚动到底部
+        self.sent_packet_display.verticalScrollBar().setValue(
+            self.sent_packet_display.verticalScrollBar().maximum()
+        )
+        self.received_packet_display.verticalScrollBar().setValue(
+            self.received_packet_display.verticalScrollBar().maximum()
+        )
+
+        self.sent_packet_display.parent().parent().update()
+        self.received_packet_display.parent().parent().update()
+
 
     def read_registers_in_chunks(self, address, count, slave_id=None, register_type='holding', max_count=125):
         results = []
@@ -572,7 +937,7 @@ class ModbusBabyGUI(QMainWindow):
             chunk_count = min(max_count, count - i)
             self.log_capture.seek(0)
             self.log_capture.truncate()
-            
+
             if register_type == 'holding':
                 result = self.client.read_holding_registers(address + i, chunk_count, slave=slave_id or self.slave_id)
             elif register_type == 'input':
@@ -584,32 +949,81 @@ class ModbusBabyGUI(QMainWindow):
             else:
                 self.logger.error(f"不支持的寄存器类型: {register_type}")
                 return None, "", ""
-            
+
             log_content = self.log_capture.getvalue()
             sent_packet, received_packet = self.extract_packets_from_log(log_content)
-            sent_packets.append(sent_packet)
-            received_packets.append(received_packet)
-            
+            # 添加时间戳
+            send_time = self.get_timestamp()
+            receive_time = self.get_timestamp()
+            sent_packets.append(f"[{send_time}]\n{sent_packet}")
+            received_packets.append(f"[{receive_time}]\n{received_packet}")
+
             if isinstance(result, ModbusIOException):
                 self.logger.error(f"读取失败: {result}")
                 return None, "\n".join(sent_packets), "\n".join(received_packets)
-            
             if register_type in ['holding', 'input']:
                 results.extend(result.registers)
             else:
                 results.extend(result.bits)
-        
+
         return results, "\n".join(sent_packets), "\n".join(received_packets)
-    # 新增：清空信息区方法
+
     def clear_info(self):
         self.log_output.clear()
 
-    # 新增：清空报文区方法
+
     def clear_packets(self):
         self.sent_packet_display.clear()
         self.received_packet_display.clear()
         self.sent_packets.clear()
         self.received_packets.clear()
+
+    def load_tcp_settings(self):
+        tcp_config = self.config.get('tcp', {})
+        self.ip_address.setText(tcp_config.get('ip', 'localhost'))
+        self.port.setText(str(tcp_config.get('port', 502)))
+        self.slave_id_tcp.setText(str(tcp_config.get('slave_id', 1)))
+
+    def load_rtu_settings(self):
+        rtu_config = self.config.get('rtu', {})
+        self.update_serial_ports()
+        self.baud_rate.setCurrentText(str(rtu_config.get('baud_rate', 9600)))
+        self.data_bits.setCurrentText(str(rtu_config.get('data_bits', 8)))
+        self.stop_bits.setCurrentText(str(rtu_config.get('stop_bits', 1)))
+        self.parity.setCurrentText(rtu_config.get('parity', 'None'))
+        self.slave_id_rtu.setText(str(rtu_config.get('slave_id', 1)))
+
+
+    #def update_serial_ports(self,default_port=None):
+    def update_serial_ports(self, default_port=None):
+        self.logger.info("开始更新串口列表")
+        self.serial_port.clear()
+
+        system_ports = self.get_system_serial_ports()
+
+        if system_ports:
+            self.serial_port.addItems(system_ports)
+            if default_port and default_port in system_ports:
+                self.serial_port.setCurrentText(default_port)
+            else:
+                self.serial_port.setCurrentIndex(len(system_ports) - 1)  # 选择最后一个串口
+            self.logger.info(f"串口列表更新完成，当前选中: {self.serial_port.currentText()}")
+        else:
+            self.logger.info("未检测到可用串口")
+            self.log_output.append("未检测到可用串口")
+
+    def get_system_serial_ports(self):
+        try:
+            if self.modbus_debugger is None:
+                self.logger.info("初始化 ModbusDebugger 实例")
+                self.modbus_debugger = Modbusdebugger(self.config)
+            ports = self.modbus_debugger.get_available_serial_ports()
+            self.logger.info(f"系统检测到的串口: {ports}")
+            return ports
+        except Exception as e:
+            self.logger.error(f"获取系统串口列表时出错: {str(e)}")
+            return []
+
 
 
 if __name__ == "__main__":
