@@ -1,13 +1,21 @@
 #大牛大巨婴
 import logging
 from pymodbus.client import ModbusTcpClient, ModbusSerialClient
-from pymodbus.exceptions import ModbusIOException,ModbusException
+
+from pymodbus.exceptions import ModbusException, ModbusIOException
 from pymodbus.pdu import ExceptionResponse
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 from pymodbus.constants import Endian
-import serial,serial.tools.list_ports 
+import serial
+import io   
 import os
-import io
+from datetime import datetime
+try:
+    from serial.tools import list_ports
+    PYSERIAL_AVAILABLE = True
+except ImportError:
+
+    PYSERIAL_AVAILABLE = False
 
 class ModbusDebugger:
     def __init__(self, config):
@@ -22,26 +30,27 @@ class ModbusDebugger:
         pymodbus_logger.setLevel(logging.DEBUG)
         pymodbus_logger.addHandler(self.log_handler)
 
+        # 创建日志文件夹
+        self.log_dir = "logs"
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+
+        # 初始化日志文件
+        self.current_log_file = None
+        self.packet_count = 0
+        self.max_packets_per_file = 256
+    
     def get_available_serial_ports(self):
-        try:
-            # Using pyserial's tools
-            pyserial_ports = serial.tools.list_ports.comports()
-            existing_ports =[]
-            if pyserial_ports:
-                for port in pyserial_ports:
-                    existing_ports.append(port.device)
-            manual_ports = [f'/dev/ttyS{i}' for i in range(10)] 
-            for port in manual_ports:
-                if os.path.exists(port):
-                    existing_ports.append(port)
-            return existing_ports
-        except ImportError:
-            self.logger.warning("pyserial 库未安装，无法获取可用串口列表")
+        if not PYSERIAL_AVAILABLE:
+            self.logger.warning("pyserial 库未安装，无法获取可用串口列表 (checked at module load)")
             return []
+        try:
+            # 'list_ports' is available here if PYSERIAL_AVAILABLE is True
+            ports = list(list_ports.comports())
+            return [port.device for port in ports]
         except Exception as e:
             self.logger.error(f"获取串口列表时发生错误: {str(e)}")
             return []
-
     def connect_tcp(self, host, port, slave_id):
         try:
             self.client = ModbusTcpClient(host=host, port=port)
@@ -54,9 +63,9 @@ class ModbusDebugger:
     def connect_rtu(self, port, baud_rate, data_bits, stop_bits, parity, slave_id):
         try:
             self.client = ModbusSerialClient(
-                port = port,
-                baudrate = baud_rate,
-                bytesize = data_bits,
+                port=port,
+                baudrate=baud_rate,
+                bytesize=data_bits,
                 parity=parity[0].upper(),
                 stopbits=stop_bits
             )
@@ -68,25 +77,19 @@ class ModbusDebugger:
         
     def connect_rtu_over_tcp(self, host, port, slave_id):
         try:
+            # RTU over TCP暂时不支持，使用标准TCP连接
+            self.logger.warning("RTU over TCP功能暂时不可用，使用标准TCP连接")
             self.client = ModbusTcpClient(
-                host =host, 
-                port = port,
-                frame = ModbusRtuFramer,
-                timeout = 3,
-                retries = 1
+                host=host,
+                port=port,
+                timeout=3,
+                retries=1
             )
             self.slave_id = slave_id
             return self.client.connect()
         except Exception as e:
             self.logger.error(f"RTU over TCP connect failed: {str(e)}")
             return False
-
-    def disconnect(self):
-        if self.client:
-            self.client.close()
-            self.client = None
-            return True
-        return False
 
     def connect(self):
         try:
@@ -122,27 +125,27 @@ class ModbusDebugger:
             self.client.close()
             self.logger.info("已断开连接")
 
-
-    def write_float(self, address, value, data_type='FLOAT32', byte_order='big', word_order='big'):
+    def write_float(self, address, value, slave_id, data_type='FLOAT32', byte_order='big', word_order='big'):
         # 在需要使用 Endian 的地方
         byteorder = Endian.BIG if byte_order == 'big' else Endian.LITTLE
         wordorder = Endian.BIG if word_order == 'big' else Endian.LITTLE
-
+        
         builder = BinaryPayloadBuilder(byteorder=byteorder, wordorder=wordorder)
+        
         if data_type == 'FLOAT32':
             builder.add_32bit_float(value)
         elif data_type == 'FLOAT64':
             builder.add_64bit_float(value)
         
         registers = builder.to_registers()
-        return self.client.write_registers(address, registers)
+        return self.client.write_registers(address, registers, slave=slave_id)
 
-    def read_float(self, address, count, data_type='FLOAT32', byte_order='big', word_order='big'):
+    def read_float(self, address, count, slave_id, data_type='FLOAT32', byte_order='big', word_order='big'):
         # 在需要使用 Endian 的地方
         byteorder = Endian.BIG if byte_order == 'big' else Endian.LITTLE
         wordorder = Endian.BIG if word_order == 'big' else Endian.LITTLE
         
-        response = self.client.read_holding_registers(address, count)
+        response = self.client.read_holding_registers(address, count=count, slave_id=slave_id)
         decoder = BinaryPayloadDecoder.fromRegisters(response.registers, byteorder=byteorder, wordorder=wordorder)
            
         if data_type == 'FLOAT32':
@@ -203,30 +206,6 @@ class ModbusDebugger:
         except Exception as e:
             self.logger.error(f"写入多个线圈时发生错误: {str(e)}")
             return False, "", ""
-        
-    def write_register(self, address, values, slave_id=None, register_type='holding'):
-        if not self.client.is_socket_open():
-            return False, "客户端未连接", ""
-
-        try:
-            if register_type == 'holding':
-                if len(values) == 1:
-                    result = self.client.write_register(address, values[0], slave=slave_id or self.slave_id)
-                else:
-                    result = self.client.write_registers(address, values, slave=slave_id or self.slave_id)
-            elif register_type == 'coil':
-                if len(values) == 1:
-                    result = self.client.write_coil(address, bool(values[0]), slave=slave_id or self.slave_id)
-                else:
-                    result = self.client.write_coils(address, [bool(v) for v in values], slave=slave_id or self.slave_id)
-            else:
-                return False, f"不支持的寄存器类型: {register_type}", ""
-
-            if isinstance(result, ModbusIOException):
-                return False, str(result), ""
-            return True, "写入成功", str(result)
-        except Exception as e:
-            return False, f"写入时发生错误: {str(e)}", ""
 
 
     def write_registers(self, address, values, slave_id=None, data_type='UINT16', byte_order='big', word_order='big'):
@@ -308,7 +287,7 @@ class ModbusDebugger:
             self.log_capture.seek(0)
             self.log_capture.truncate()
             self.logger.debug(f"尝试读取寄存器 - 地址: {address}, 数量: {count}, 从设备ID: {slave_id or self.slave_id}, 数据类型: {data_type}")
-            result = getattr(self.client, function)(address, count, slave=slave_id or self.slave_id)
+            result = read_func(address, count, slave=slave_id or self.slave_id)
             log_content = self.log_capture.getvalue()
             sent_packet, received_packet = self.extract_packets_from_log(log_content)
             
@@ -378,15 +357,23 @@ class ModbusDebugger:
         # 将报文转换为十六进制格式
         #sent_packet = ' '.join([f'{int(x, 16):02X}' for x in sent_packet.split()])
         #received_packet = ' '.join([f'{int(x, 16):02X}' for x in received_packet.split()])
-      # 使用正则表达式提取发送和接收的报文
+        # 使用正则表达式提取发送和接收的报文
         lines = log_content.split('\n')
         for line in lines:
             if "SEND:" in line:
                 sent_packet = line.split("SEND:")[1].strip()
             elif "RECV:" in line:
                 received_packet = line.split("RECV:")[1].strip()
-        
-        self.logger.debug(f"提取的报文 - 发送: {sent_packet}, 接收: {received_packet}")
+            elif "Processing:" in line:
+                # 提取接收报文
+                hex_data = line.split("Processing:")[1].strip()
+                import re
+                hex_values = re.findall(r'0x([0-9a-fA-F]+)', hex_data)
+                if hex_values:
+                    received_packet = ' '.join(hex_values)
+
+ 
+
         return sent_packet, received_packet
         
 
@@ -443,6 +430,27 @@ class ModbusDebugger:
                 return [decoder.decode_32bit_float() for _ in range(len(registers) // 2)]
             elif data_type == 'FLOAT64':
                 return [decoder.decode_64bit_float() for _ in range(len(registers) // 4)]
+            elif data_type == 'ASCII':
+                # 将寄存器转换为ASCII字符串
+                ascii_bytes = []
+                for register in registers:
+                    ascii_bytes.append((register >> 8) & 0xFF)  # 高字节
+                    ascii_bytes.append(register & 0xFF)         # 低字节
+                # 移除空字符并转换为字符串
+                ascii_string = ''.join(chr(b) for b in ascii_bytes if b != 0)
+                return [ascii_string]
+            elif data_type == 'TIMESTAMP':
+                # 时间戳通常是32位或64位
+                if len(registers) >= 2:
+                    # 32位时间戳（2个寄存器）
+                    timestamp = (registers[0] << 16) | registers[1]
+                    try:
+                        dt = datetime.fromtimestamp(timestamp)
+                        return [dt.strftime('%Y-%m-%d %H:%M:%S')]
+                    except (ValueError, OSError):
+                        return [f"无效时间戳: {timestamp}"]
+                else:
+                    return ["时间戳数据不足"]
             else:
                 self.logger.warning(f"未知的数据类型: {data_type}，返回原始数据")
                 return registers
@@ -472,18 +480,29 @@ class ModbusDebugger:
             
             try:
                 if register_type == 'holding':
-                    result = self.client.read_holding_registers(address + i, chunk_count, slave=slave_id or self.slave_id)
+                    result = self.client.read_holding_registers(address + i, count=chunk_count, slave=slave_id or self.slave_id)
                 elif register_type == 'input':
-                    result = self.client.read_input_registers(address + i, chunk_count, slave=slave_id or self.slave_id)
+                    result = self.client.read_input_registers(address + i, count=chunk_count, slave=slave_id or self.slave_id)
                 elif register_type == 'coil':
-                    result = self.client.read_coils(address + i, chunk_count, slave=slave_id or self.slave_id)
+                    result = self.client.read_coils(address + i, count=chunk_count, slave=slave_id or self.slave_id)
                 elif register_type == 'discrete':
-                    result = self.client.read_discrete_inputs(address + i, chunk_count, slave=slave_id or self.slave_id)
+                    result = self.client.read_discrete_inputs(address + i, count=chunk_count, slave=slave_id or self.slave_id)
                 
+                # 从日志中提取发送和接收的报文
                 log_content = self.log_capture.getvalue()
-                sent_packet, received_packet = self.extract_packets_from_log(log_content)
-                sent_packets.append(sent_packet)
-                received_packets.append(received_packet)
+                extracted_sent_packet, extracted_received_packet = self.extract_packets_from_log(log_content)
+
+                # 格式化提取的报文
+                formatted_sent_packet = self.format_packet(extracted_sent_packet)
+                formatted_received_packet = self.format_packet(extracted_received_packet)
+
+                sent_packets.append(formatted_sent_packet)
+                received_packets.append(formatted_received_packet)
+
+                # 保存报文到日志文件
+                # Pass formatted packets to save_packet_log if it expects them formatted,
+                # or raw if it does its own formatting. Current save_packet_log expects strings.
+                self.save_packet_log(formatted_sent_packet, formatted_received_packet, register_type, address + i, chunk_count)
                 
                 if isinstance(result, ModbusIOException):
                     raise ModbusIOException(f"读取失败: {result}")
@@ -502,6 +521,35 @@ class ModbusDebugger:
         
         return results, "\n".join(sent_packets), "\n".join(received_packets)
 
+    def save_packet_log(self, sent_packet, received_packet, register_type, address, count):
+        """保存报文日志到文件"""
+        try:
+            # 检查是否需要创建新文件
+            if self.current_log_file is None or self.packet_count >= self.max_packets_per_file:
+                # 创建新的日志文件
+                file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"modbus_log_{file_timestamp}.txt"
+                self.current_log_file = os.path.join(self.log_dir, filename)
+                self.packet_count = 0
+
+                # 写入文件头
+                with open(self.current_log_file, 'w', encoding='utf-8') as f:
+                    f.write(f"Modbus通信日志 - 创建时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("=" * 80 + "\n")
+
+            # 追加报文记录
+            packet_timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]  # 精确到毫秒
+            with open(self.current_log_file, 'a', encoding='utf-8') as f:
+                f.write(f"时间: {packet_timestamp} | 操作: 读取{register_type}寄存器 | 地址: {address} | 数量: {count}\n")
+                f.write(f"发送: {sent_packet}\n")
+                f.write(f"接收: {received_packet}\n")
+                f.write("-" * 80 + "\n")
+
+            self.packet_count += 1
+
+        except Exception as e:
+            self.logger.error(f"保存报文日志失败: {str(e)}")
+
     def read_holding_registers(self, address, count, slave_id=None, data_type='UINT16', byte_order='big', word_order='big'):
         results, sent_packet, received_packet = self.read_registers_in_chunks(address, count, slave_id, 'holding')
         return self.process_data(results, data_type, byte_order, word_order) if results is not None else None, sent_packet, received_packet
@@ -515,3 +563,63 @@ class ModbusDebugger:
 
     def read_discrete_inputs(self, address, count, slave_id=None):
         return self.read_registers_in_chunks(address, count, slave_id, 'discrete')
+
+    def report_slave_id(self, slave_id=None):
+        """FC17 - 报告从站ID"""
+        if not self.client:
+            self.logger.error("未连接到设备")
+            return None, "", ""
+
+        try:
+            self.log_capture.seek(0)
+            self.log_capture.truncate()
+
+            unit_id = slave_id or self.slave_id
+
+            # 使用pymodbus的report_slave_id方法 (FC17)
+            result = self.client.report_slave_id(slave=unit_id)
+
+            # 从日志中提取发送和接收的报文
+            log_content = self.log_capture.getvalue()
+            extracted_sent_packet, extracted_received_packet = self.extract_packets_from_log(log_content)
+            formatted_sent_packet = self.format_packet(extracted_sent_packet)
+            formatted_received_packet = self.format_packet(extracted_received_packet)
+
+            if isinstance(result, ExceptionResponse):
+                self.logger.error(f"FC17操作失败: {result}")
+                return None, sent_packet, received_packet
+
+            if isinstance(result, ModbusIOException):
+                raise ModbusIOException(f"FC17操作失败: {result}")
+
+            # 解析FC17响应数据 - 显示字节(十进制)和ASCII
+            if hasattr(result, 'identifier') and result.identifier:
+                identifier_data = result.identifier
+
+                # 生成十进制字节显示
+                decimal_bytes = ' '.join(str(b) for b in identifier_data)
+
+                # 生成ASCII显示（不可打印字符用'.'代替）
+                ascii_chars = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in identifier_data)
+
+                processed_data = [
+                    f"从站ID: {result.slave_id if hasattr(result, 'slave_id') else unit_id}",
+                    f"数据长度: {len(identifier_data)} 字节",
+                    f"字节(十进制): {decimal_bytes}",
+                    f"ASCII: '{ascii_chars}'"
+                ]
+
+            else:
+                processed_data = [f"从站ID: {unit_id}", "无设备标识信息"]
+
+            # 保存报文日志
+            self.save_packet_log(formatted_sent_packet, formatted_received_packet, "FC17", 0, 0)
+
+            return processed_data, formatted_sent_packet, formatted_received_packet
+
+        except ModbusIOException as e:
+            self.logger.error(str(e))
+            return None, formatted_sent_packet if 'formatted_sent_packet' in locals() else "", ""
+        except Exception as e:
+            self.logger.error(f"FC17操作时发生未知错误: {str(e)}")
+            return None, "", ""

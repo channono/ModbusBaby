@@ -2,7 +2,7 @@ import sys
 from pymodbus.server import StartTcpServer
 from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
 
-def run_server(host='localhost', port=502):
+def run_server(host='0.0.0.0', port=502):
     # 创建一个数据存储
     store = ModbusSlaveContext()
     context = ModbusServerContext(slaves=store, single=True)

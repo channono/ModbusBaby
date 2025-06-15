@@ -9,19 +9,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt6.QtCore import Qt, QEvent,QSettings,QTimer
 from modbus_debugger import ModbusDebugger
 from data_processor import DataProcessor
+from pymodbus.exceptions import ModbusIOException
 from PyQt6.QtGui import  QIcon,QPixmap,QFont, QIntValidator,QColor, QTextCharFormat,QPalette
-
-
-
-
-def get_resource_path(relative_path):
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # 如果是完全打包的应用程序
-        base_path = sys._MEIPASS
-    else:
-        # 如果是开发环境或别名模式
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+from utils import resource_path as get_resource_path # Use centralized resource_path
 
 class ModbusBabyGUI(QMainWindow):
     def __init__(self, config=None):
@@ -42,8 +32,8 @@ class ModbusBabyGUI(QMainWindow):
         self.setWindowTitle("ModbusBaby - by Daniel BigGiantBaby")
         self.setGeometry(100, 100, 866, 600)
         self.set_window_icon()
+        self.create_ui_elements() # Create UI elements once
         self.restore_window_state()
-        self.create_ui_elements()
 
 
         self.byte_order = 'big'
@@ -66,7 +56,7 @@ class ModbusBabyGUI(QMainWindow):
             self.logger.exception("Error setting window icon")
 
     def init_ui(self):
-        self.create_ui_elements()
+        # self.create_ui_elements() # Already called in __init__
         self.setup_validators()
         self.connect_button.clicked.disconnect()  # 断开所有之前的连接
         self.connect_button.clicked.connect(self.toggle_connection)
@@ -311,7 +301,7 @@ class ModbusBabyGUI(QMainWindow):
     def create_ui_elements(self):
         # 标题
         self.title_label = QLabel("😄大牛大巨婴👌")
-        font = QFont('NotoEmoji')
+        font = QFont()
         font.setPointSize(14)
         font.setBold(True)
         self.title_label.setFont(font)
@@ -325,7 +315,7 @@ class ModbusBabyGUI(QMainWindow):
         # 连接类型选择
         self.connection_type = QComboBox()
         self.connection_type.addItems(["Modbus TCP", "Modbus RTU"])
-        self.connection_type.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
         self.connection_type.setMaximumWidth(140)
         self.connection_type.currentIndexChanged.connect(self.on_connection_type_changed)
 
@@ -356,27 +346,27 @@ class ModbusBabyGUI(QMainWindow):
         # RTU 设置元素
         self.serial_port = QComboBox()
         self.serial_port.setFixedWidth(250)
-        self.serial_port.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.baud_rate = QComboBox()
         self.baud_rate.addItems(["9600", "19200", "38400", "57600", "115200"])
         self.baud_rate.setFixedWidth(90)
-        self.baud_rate.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.data_bits = QComboBox()
         self.data_bits.addItems(["8", "7"])
         self.data_bits.setFixedWidth(60)
-        self.data_bits.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.stop_bits = QComboBox()
         self.stop_bits.addItems(["1", "2"])
         self.stop_bits.setFixedWidth(60)
-        self.stop_bits.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.parity = QComboBox()
         self.parity.addItems(["None", "Even", "Odd"])
         self.parity.setFixedWidth(80)
-        self.parity.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.slave_id_rtu = QLineEdit()
         self.slave_id_rtu.setFixedWidth(80)
@@ -396,29 +386,29 @@ class ModbusBabyGUI(QMainWindow):
         self.end_address_input.setValidator(address_validator)
 
         self.register_type_combo = QComboBox()
-        self.register_type_combo.addItems(['Holding Register', 'Input Register', 'Discrete Input', 'Coil'])
+        self.register_type_combo.addItems(['Holding Register', 'Input Register', 'Discrete Input', 'Coil', 'Report Slave ID (FC11H)'])
         self.register_type_combo.currentTextChanged.connect(self.update_data_type_visibility)
-        self.register_type_combo.setFixedWidth(150)
-        self.register_type_combo.setFixedHeight(default_height)
+        self.register_type_combo.setFixedWidth(200)  # 增加宽度以适应新选项
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.data_type_combo = QComboBox()
-        self.data_type_combo.addItems(['BYTE', 'INT16', 'UINT16', 'INT32', 'UINT32', 'INT64', 'UINT64', 'FLOAT32', 'FLOAT64', 'BOOL'])
-        self.data_type_combo.setFixedWidth(100)
-        self.data_type_combo.setFixedHeight(default_height)
+        self.data_type_combo.addItems(['BYTE', 'INT16', 'UINT16', 'INT32', 'UINT32', 'INT64', 'UINT64', 'FLOAT32', 'FLOAT64', 'BOOL', 'ASCII', 'UNIX_TIMESTAMP'])
+        self.data_type_combo.setFixedWidth(120)  # 增加宽度以适应新数据类型
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.byte_order_combo = QComboBox()
         self.byte_order_combo.addItems(['AB', 'BA'])
         self.byte_order_combo.setToolTip("字节序: AB (Big Endian), BA (Little Endian)")
         self.byte_order_combo.setFixedWidth(80)
         self.byte_order_combo.currentTextChanged.connect(self.update_byte_order)
-        self.byte_order_combo.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.word_order_combo = QComboBox()
         self.word_order_combo.addItems(['1234', '4321'])
         self.word_order_combo.setToolTip("字序: 1234 (Big Endian), 4321 (Little Endian)")
         self.word_order_combo.setFixedWidth(80)
         self.word_order_combo.currentTextChanged.connect(self.update_word_order)
-        self.word_order_combo.setFixedHeight(default_height)
+        # 移除固定高度，让下拉框根据内容自动调整
 
         self.read_button = QPushButton("读取")
         self.read_button.setEnabled(False)
@@ -629,20 +619,20 @@ class ModbusBabyGUI(QMainWindow):
                     )
                 elif register_type == 'Discrete Input':
                     result, sent_packet, received_packet = self.modbus_debugger.read_discrete_inputs(
-                        start_address, count, slave_id,
-                        byte_order=self.byte_order, word_order=self.word_order
+                        start_address, count, slave_id
                     )
                 elif register_type == 'Coil':
                     result, sent_packet, received_packet = self.modbus_debugger.read_coils(
-                        start_address, count, slave_id,
-                        byte_order=self.byte_order, word_order=self.word_order
+                        start_address, count, slave_id
                     )
+                elif register_type == 'Report Slave ID (FC11H)':
+                    # FC11H报告从站ID，不需要地址和数量参数
+                    result, sent_packet, received_packet = self.modbus_debugger.report_slave_id(slave_id)
                 else:
                     self.logger.error(f"不支持的寄存器类型: {register_type}")
                     return
 
-                if result and isinstance(result, tuple) and len(result) == 2:
-                    sent_packet, received_packet = result
+                # 处理报文显示
                 send_time = self.get_timestamp_with_operation(": READ")
                 receive_time = self.get_timestamp_with_operation(": READ")
 
@@ -656,15 +646,26 @@ class ModbusBabyGUI(QMainWindow):
 
                 if result is not None:
                     self.logger.debug(f"读取成功 - 结果: {result}")
-                    if register_type in ['Discrete Input', 'Coil']:
+                    if register_type == 'Report Slave ID (FC11H)':
+                        # FC11H返回的是设备信息列表
+                        formatted_result = '\n'.join(result) if isinstance(result, list) else str(result)
+                        self.value_input.setText(formatted_result)
+                        self.log_output.append(f"FC11H设备信息:\n{formatted_result}")
+                    elif register_type in ['Discrete Input', 'Coil']:
                         formatted_result = self.format_result(result, 'BOOL')
+                        self.value_input.setText(formatted_result)
+                        self.log_output.append(f"读取 {register_type} {start_address}-{end_address}: {formatted_result}")
                     else:
                         formatted_result = self.format_result(result, data_type)
-                    self.value_input.setText(formatted_result)
-                    self.log_output.append(f"读取 {register_type} {start_address}-{end_address}: {formatted_result}")
+                        self.value_input.setText(formatted_result)
+                        self.log_output.append(f"读取 {register_type} {start_address}-{end_address}: {formatted_result}")
                 else:
-                    self.logger.error(f"读取 {register_type} {start_address}-{end_address} 失败")
-                    self.log_output.append(f"读取 {register_type} {start_address}-{end_address} 失败")
+                    if register_type == 'Report Slave ID (FC11H)':
+                        self.logger.error("FC11H操作失败")
+                        self.log_output.append("FC11H操作失败")
+                    else:
+                        self.logger.error(f"读取 {register_type} {start_address}-{end_address} 失败")
+                        self.log_output.append(f"读取 {register_type} {start_address}-{end_address} 失败")
 
             except Exception as e:
                 self.log_output.append(f"读取操作发生错误: {repr(e)}")
@@ -699,8 +700,7 @@ class ModbusBabyGUI(QMainWindow):
             if register_type == 'Coil':
                 values = [bool(int(v.strip())) for v in value.split(',')]
                 success, message, result = self.modbus_debugger.write_coils(
-                    start_address, values, slave_id,
-                    byte_order=self.byte_order, word_order=self.word_order
+                    start_address, values, slave_id
                 )
             elif register_type == 'Holding Register':
                 if data_type == 'BYTE':
@@ -718,6 +718,29 @@ class ModbusBabyGUI(QMainWindow):
                         values.append(int_value)
                 elif data_type == 'BOOL':
                     values = [bool(int(v.strip())) for v in value.split(',')]
+                elif data_type == 'ASCII':
+                    # ASCII字符串转换为寄存器值
+                    ascii_str = value.strip()
+                    values = []
+                    # 每两个字符组成一个寄存器
+                    for i in range(0, len(ascii_str), 2):
+                        if i + 1 < len(ascii_str):
+                            high_byte = ord(ascii_str[i])
+                            low_byte = ord(ascii_str[i + 1])
+                            values.append((high_byte << 8) | low_byte)
+                        else:
+                            # 奇数个字符，最后一个字符放在高字节
+                            values.append(ord(ascii_str[i]) << 8)
+                elif data_type == 'UNIX_TIMESTAMP':
+                    if value.strip().lower() == 'now':
+                        # 使用当前系统时间
+                        import time
+                        timestamp = int(time.time())
+                    else:
+                        # 解析用户输入的时间戳
+                        timestamp = int(value.strip())
+                    # 32位时间戳分解为两个16位寄存器
+                    values = [(timestamp >> 16) & 0xFFFF, timestamp & 0xFFFF]
                 else:
                     self.log_output.append(f"错误：不支持的数据类型 {data_type}")
                     return
@@ -726,6 +749,12 @@ class ModbusBabyGUI(QMainWindow):
                     byte_order=self.byte_order, word_order=self.word_order
                 )
 
+            elif register_type == 'Read/Write Multiple (FC11H)':
+                # FC11H同时读写，这里实现写入功能
+                success, message, result = self.modbus_debugger.read_write_multiple_registers(
+                    start_address, count, start_address, values, slave_id, data_type,
+                    byte_order=self.byte_order, word_order=self.word_order
+                )
             elif register_type in ['Input Register', 'Discrete Input'] :
                 self.log_output.append(f"错误：{register_type} 不支持写操作")
                 return
@@ -746,12 +775,15 @@ class ModbusBabyGUI(QMainWindow):
                 send_time = self.get_timestamp_with_operation(": WRITE")
                 receive_time = self.get_timestamp_with_operation(": WRITE")
 
-                self.sent_packets.append(f"[{send_time}]\n{sent_packet}")
-                self.received_packets.append(f"{receive_time}\n{received_packet}")
+                formatted_sent = self.modbus_debugger.format_packet(sent_packet)
+                formatted_received = self.modbus_debugger.format_packet(received_packet)
+
+                self.sent_packets.append(f"[{send_time}]\n{formatted_sent}")
+                self.received_packets.append(f"{receive_time}\n{formatted_received}")
                 self.update_packet_display()
                 self.logger.debug("报文已添加到显示列表")
             else:
-                self.logger.warning("无法获取发送或接收的报文")
+                self.logger.warning(f"无法获取发送或接收的报文，result类型: {type(result)}, 内容: {result}")
         except ValueError as e:
             self.log_output.append(f"错误：输入值无效 - {str(e)}")
         except Exception as e:
@@ -801,10 +833,13 @@ class ModbusBabyGUI(QMainWindow):
 
                 # 根据数据类型调整读取的寄存器数量
                 registers_per_value = 1
-                if data_type in ['INT32', 'UINT32', 'FLOAT32']:
+                if data_type in ['INT32', 'UINT32', 'FLOAT32', 'UNIX_TIMESTAMP']:
                     registers_per_value = 2
                 elif data_type in ['INT64', 'UINT64','FLOAT64']:
                     registers_per_value = 4
+                elif data_type == 'ASCII':
+                    # ASCII类型保持用户指定的寄存器数量
+                    registers_per_value = 1
 
                 # 确保读取的寄存器数量是正确的倍数
                 count = max(count, registers_per_value)
@@ -867,6 +902,10 @@ class ModbusBabyGUI(QMainWindow):
             return ', '.join(map(str, result))
         elif data_type in ['FLOAT32', 'FLOAT64']:
             return ', '.join(f"{x:.6f}" for x in result)
+        elif data_type == 'ASCII':
+            return str(result[0]) if result else ""
+        elif data_type == 'UNIX_TIMESTAMP':
+            return str(result[0]) if result else ""
         else:
             return str(result)
     def changeEvent(self, event):
@@ -875,29 +914,30 @@ class ModbusBabyGUI(QMainWindow):
         super().changeEvent(event)
 
     def append_colored_text(self, text_edit, text):
-        cursor = text_edit.textCursor()
-        palette = QApplication.palette()
-        is_dark_mode = palette.color(QPalette.ColorRole.Window).lightness() < 128
-        default_color = palette.color(QPalette.ColorRole.Text)
-        highlight_color = palette.color(QPalette.ColorRole.Highlight)
+        try:
+            cursor = text_edit.textCursor()
+            palette = QApplication.palette()
+            is_dark_mode = palette.color(QPalette.ColorRole.Window).lightness() < 128
+            default_color = palette.color(QPalette.ColorRole.Text)
 
-        format_time = QTextCharFormat()
-        if is_dark_mode:
-            format_time.setForeground(QColor(0, 255, 255))  # 深色模式使用青色
-        else:
-            format_time.setForeground(QColor("blue"))  # 浅色模式使用蓝色
+            format_time = QTextCharFormat()
+            if is_dark_mode:
+                format_time.setForeground(QColor(0, 255, 255))  # 深色模式使用青色
+            else:
+                format_time.setForeground(QColor("blue"))  # 浅色模式使用蓝色
 
-        format_data = QTextCharFormat()
-        format_data.setForeground(default_color)
+            format_data = QTextCharFormat()
+            format_data.setForeground(default_color)
 
-        lines = text.split('\n', 1)
-        if len(lines) > 0:
-            cursor.insertText(lines[0] + '\n', format_time)
-            #text_edit.append(lines[0])
-            if len(lines) > 1:
-                #text_edit.append(lines[1])
-                cursor.insertText(lines[1], format_data)
-        text_edit.append("")
+            lines = text.split('\n', 1)
+            if len(lines) > 0:
+                cursor.insertText(lines[0] + '\n', format_time)
+                if len(lines) > 1:
+                    cursor.insertText(lines[1], format_data)
+            text_edit.append("")
+        except Exception as e:
+            # 如果彩色文本失败，使用简单的文本追加
+            text_edit.append(text)
 
     def update_packet_display(self):
 
@@ -925,48 +965,13 @@ class ModbusBabyGUI(QMainWindow):
             self.received_packet_display.verticalScrollBar().maximum()
         )
 
-        self.sent_packet_display.parent().parent().update()
-        self.received_packet_display.parent().parent().update()
+        # 安全地更新显示
+        try:
+            self.sent_packet_display.update()
+            self.received_packet_display.update()
+        except Exception as e:
+            self.logger.debug(f"更新显示时出现错误: {e}")
 
-
-    def read_registers_in_chunks(self, address, count, slave_id=None, register_type='holding', max_count=125):
-        results = []
-        sent_packets = []
-        received_packets = []
-        for i in range(0, count, max_count):
-            chunk_count = min(max_count, count - i)
-            self.log_capture.seek(0)
-            self.log_capture.truncate()
-
-            if register_type == 'holding':
-                result = self.client.read_holding_registers(address + i, chunk_count, slave=slave_id or self.slave_id)
-            elif register_type == 'input':
-                result = self.client.read_input_registers(address + i, chunk_count, slave=slave_id or self.slave_id)
-            elif register_type == 'coil':
-                result = self.client.read_coils(address + i, chunk_count, slave=slave_id or self.slave_id)
-            elif register_type == 'discrete':
-                result = self.client.read_discrete_inputs(address + i, chunk_count, slave=slave_id or self.slave_id)
-            else:
-                self.logger.error(f"不支持的寄存器类型: {register_type}")
-                return None, "", ""
-
-            log_content = self.log_capture.getvalue()
-            sent_packet, received_packet = self.extract_packets_from_log(log_content)
-            # 添加时间戳
-            send_time = self.get_timestamp()
-            receive_time = self.get_timestamp()
-            sent_packets.append(f"[{send_time}]\n{sent_packet}")
-            received_packets.append(f"[{receive_time}]\n{received_packet}")
-
-            if isinstance(result, ModbusIOException):
-                self.logger.error(f"读取失败: {result}")
-                return None, "\n".join(sent_packets), "\n".join(received_packets)
-            if register_type in ['holding', 'input']:
-                results.extend(result.registers)
-            else:
-                results.extend(result.bits)
-
-        return results, "\n".join(sent_packets), "\n".join(received_packets)
 
     def clear_info(self):
         self.log_output.clear()
@@ -1016,7 +1021,7 @@ class ModbusBabyGUI(QMainWindow):
         try:
             if self.modbus_debugger is None:
                 self.logger.info("初始化 ModbusDebugger 实例")
-                self.modbus_debugger = Modbusdebugger(self.config)
+                self.modbus_debugger = ModbusDebugger(self.config)
             ports = self.modbus_debugger.get_available_serial_ports()
             self.logger.info(f"系统检测到的串口: {ports}")
             return ports
