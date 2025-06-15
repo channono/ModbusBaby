@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 保留我们之前的串行设备权限 -->
+    <key>com.apple.security.device.serial</key>
+    <true/>
+
+    <!-- 新增：允许应用作为客户端向外发起网络连接 -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- 新增：允许应用作为服务器监听传入的网络连接 -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>
